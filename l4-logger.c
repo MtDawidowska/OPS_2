@@ -159,6 +159,7 @@ int main(int argc, char *argv[])
     struct epoll_event ev, events[MAX_EVENTS];
     ev.events = EPOLLIN;
     ev.data.fd = server_socketfd;
+    
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socketfd, &ev) == -1) {
         ERR("epoll_ctl: server_socketfd");
     }
