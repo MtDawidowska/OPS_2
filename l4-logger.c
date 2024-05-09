@@ -5,8 +5,10 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <sys/epoll.h>
 
-#define MAX_CLIENTS 1
+#define MAX_EVENTS 10
+#define MAX_CLIENTS 5
 #define BUFFER_SIZE 1024
 
 #define ERR(source) (perror(source),                                 \
@@ -121,47 +123,89 @@ void string_modify(char *s){ // both of the above
 
 int main(int argc, char *argv[])
 {
-
-    if (argc != 3)
+    if (argc != 4)
     {
         usage(argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    int client_socketfd;
+    char *log_file_path = argv[1];
+    int active_clients = 0;
+
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
     char buffer[BUFFER_SIZE];
+    memset(buffer, 0, sizeof(buffer));
+
 
     int server_socketfd;
-    if ((server_socketfd = bind_tcp_socket(atoi(argv[2]), MAX_CLIENTS)) < 0)
+    if ((server_socketfd = bind_tcp_socket(atoi(argv[3]), MAX_CLIENTS)) < 0)
     {
         ERR("bind");
     }
 
-    printf("Server is listening on port %s...\n", argv[2]);
+    printf("Server is listening on port %s...\n", argv[3]);
 
-    FILE *file = fopen("output.txt", "w");
-    if (file == NULL)
-    {
+    FILE *file = fopen(log_file_path, "w");
+    if (file == NULL) {
         ERR("fopen");
+    }
+
+    int epollfd = epoll_create1(0);
+    if (epollfd == -1) {
+        ERR("epoll_create1");
+    }
+
+    struct epoll_event ev, events[MAX_EVENTS];
+    ev.events = EPOLLIN;
+    ev.data.fd = server_socketfd;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socketfd, &ev) == -1) {
+        ERR("epoll_ctl: server_socketfd");
     }
 
     while (1)
     {
-        if ((client_socketfd = accept(server_socketfd, (struct sockaddr *)&client_addr, &addr_len)) == -1)
-        {
-            ERR("accept");
+        int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+        if (nfds == -1) {
+            ERR("epoll_wait");
         }
-        else
-        {
-            printf("A client has connected.\n");
-            while (read(client_socketfd, buffer, sizeof(buffer) - 1) > 0)
-            {
-                write(fileno(file), buffer, strlen(buffer));
+
+        for (int n = 0; n < nfds; ++n) {
+            if (events[n].data.fd == server_socketfd) {
+                if (active_clients >= MAX_CLIENTS) {
+                    // Reject new client
+                    int reject_socketfd = accept(server_socketfd, (struct sockaddr *)&client_addr, &addr_len);
+                    if (reject_socketfd != -1) {
+                        char *msg = "Error 23: Too many active clients\n";
+                        write(reject_socketfd, msg, strlen(msg));
+                        close(reject_socketfd);
+                    }
+                } else {
+                    int client_socketfd = accept(server_socketfd, (struct sockaddr *)&client_addr, &addr_len);
+                    if (client_socketfd == -1) {
+                        ERR("accept");
+                    } else {
+                        printf("A client has connected.\n");
+                        ev.events = EPOLLIN;
+                        ev.data.fd = client_socketfd;
+                        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client_socketfd, &ev) == -1) {
+                            ERR("epoll_ctl: client_socketfd");
+                        }
+                        active_clients++;
+                    }
+                }
+            } else {
+                // Handle client connection here...
+                ssize_t count = read(events[n].data.fd, buffer, sizeof(buffer) - 1);
+                if (count > 0) {
+                    write(fileno(file), buffer, strlen(buffer));
+                    memset(buffer, 0, sizeof(buffer));
+                } else if (count == 0 || (count == -1 && errno != EAGAIN)) {
+                    close(events[n].data.fd);
+                    epoll_ctl(epollfd, EPOLL_CTL_DEL, events[n].data.fd, NULL);
+                    active_clients--;
+                }
             }
-            memset(buffer, 0, sizeof(buffer));
-            close(client_socketfd);
         }
     }
 
