@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <sys/epoll.h>
+#include <time.h>
 
 #define MAX_EVENTS 10
 #define MAX_CLIENTS 5
@@ -88,7 +89,8 @@ int bind_tcp_socket(uint16_t port, int backlog_size)
     return socketfd;
 }
 
-void string_invert_case(char *s){ // invert cases of letters
+void string_invert_case(char *s)
+{ // invert cases of letters
     int j = 0;
     for (int i = 0; s[i]; i++)
     {
@@ -106,7 +108,8 @@ void string_invert_case(char *s){ // invert cases of letters
     s[j] = '\0';
 }
 
-void string_swap_spaces(char *s){ // space to underscore and vice versa
+void string_swap_spaces(char *s)
+{ // space to underscore and vice versa
     for (int i = 0; s[i]; i++)
     {
         if (s[i] == ' ')
@@ -116,9 +119,42 @@ void string_swap_spaces(char *s){ // space to underscore and vice versa
     }
 }
 
-void string_modify(char *s){ // both of the above
-    string_invert_case(s);
-    string_swap_spaces(s);
+void string_modify(char *s, char mode)
+{
+    switch (mode)
+    {
+    case '1':
+        string_invert_case(s);
+        break;
+    case '2':
+        string_swap_spaces(s);
+        break;
+    case '3':
+        string_invert_case(s);
+        string_swap_spaces(s);
+        break;
+    default:
+        break;
+    }
+}
+
+char* get_timestamp()
+{
+    static char timestamp[6];
+    time_t current_time = time(NULL);
+
+    if (current_time == (time_t)-1) {
+        ERR( "time(NULL)");
+    }
+
+    char* c_time_string = ctime(&current_time);
+    if (c_time_string == NULL) {
+        ERR("ctime");
+    }
+
+    strncpy(timestamp, &c_time_string[11], 5);
+    timestamp[5] = '\0';  
+    return timestamp;
 }
 
 int main(int argc, char *argv[])
@@ -137,7 +173,6 @@ int main(int argc, char *argv[])
     char buffer[BUFFER_SIZE];
     memset(buffer, 0, sizeof(buffer));
 
-
     int server_socketfd;
     if ((server_socketfd = bind_tcp_socket(atoi(argv[3]), MAX_CLIENTS)) < 0)
     {
@@ -147,61 +182,90 @@ int main(int argc, char *argv[])
     printf("Server is listening on port %s...\n", argv[3]);
 
     FILE *file = fopen(log_file_path, "w");
-    if (file == NULL) {
+    if (file == NULL)
+    {
         ERR("fopen");
     }
 
     int epollfd = epoll_create1(0);
-    if (epollfd == -1) {
+    if (epollfd == -1)
+    {
         ERR("epoll_create1");
     }
 
     struct epoll_event ev, events[MAX_EVENTS];
     ev.events = EPOLLIN;
     ev.data.fd = server_socketfd;
-    
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socketfd, &ev) == -1) {
+
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socketfd, &ev) == -1)
+    {
         ERR("epoll_ctl: server_socketfd");
     }
 
     while (1)
     {
         int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
-        if (nfds == -1) {
+        if (nfds == -1)
+        {
             ERR("epoll_wait");
         }
 
-        for (int n = 0; n < nfds; ++n) {
-            if (events[n].data.fd == server_socketfd) {
-                if (active_clients >= MAX_CLIENTS) {
-                    // Reject new client
+        for (int n = 0; n < nfds; ++n)
+        {
+            if (events[n].data.fd == server_socketfd)
+            {
+                if (active_clients >= MAX_CLIENTS) //reject
+                {
                     int reject_socketfd = accept(server_socketfd, (struct sockaddr *)&client_addr, &addr_len);
-                    if (reject_socketfd != -1) {
+                    if (reject_socketfd != -1)
+                    {
                         char *msg = "Error 23: Too many active clients\n";
                         write(reject_socketfd, msg, strlen(msg));
                         close(reject_socketfd);
                     }
-                } else {
+                }
+                else
+                {
                     int client_socketfd = accept(server_socketfd, (struct sockaddr *)&client_addr, &addr_len);
-                    if (client_socketfd == -1) {
+                    if (client_socketfd == -1)
+                    {
                         ERR("accept");
-                    } else {
+                    }
+                    else
+                    {
                         printf("A client has connected.\n");
                         ev.events = EPOLLIN;
                         ev.data.fd = client_socketfd;
-                        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client_socketfd, &ev) == -1) {
+                        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client_socketfd, &ev) == -1)
+                        {
                             ERR("epoll_ctl: client_socketfd");
                         }
                         active_clients++;
                     }
                 }
-            } else {
+            }
+            else
+            {
                 // Handle client connection here...
                 ssize_t count = read(events[n].data.fd, buffer, sizeof(buffer) - 1);
-                if (count > 0) {
-                    write(fileno(file), buffer, strlen(buffer));
+                if (count > 0)
+                {
+                    char mode = buffer[0];
+                    if (mode < '1' || mode > '3')
+                    {
+                        char *msg = "Error 17: Wrong filter mode";
+                        write(events[n].data.fd, msg, strlen(msg));
+                        continue;
+                    }
+                    string_modify(buffer + 1, mode);
+                   
+                    char* local_time = get_timestamp();
+                    fprintf(file, "[%s] %s", local_time, buffer + 1);
+                    fflush(file);
                     memset(buffer, 0, sizeof(buffer));
-                } else if (count == 0 || (count == -1 && errno != EAGAIN)) {
+                }
+                else if (count == 0 || (count == -1 && errno != EAGAIN))
+                {
                     close(events[n].data.fd);
                     epoll_ctl(epollfd, EPOLL_CTL_DEL, events[n].data.fd, NULL);
                     active_clients--;
