@@ -88,6 +88,7 @@ int main(int argc, char** argv)
         ERR("mmap");
     if (close(log_fd))
         ERR("close");
+        
     float* data;
     if ((data = (float*)mmap(NULL, n * sizeof(float), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)) ==
         MAP_FAILED)
